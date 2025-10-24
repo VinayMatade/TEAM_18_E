@@ -11,6 +11,8 @@ from typing import Dict, Optional, Tuple, List
 import logging
 from datetime import datetime, timezone
 import pytz
+from pathlib import Path
+from itertools import combinations
 from ..utils.coordinates import CoordinateConverter
 
 
@@ -91,6 +93,11 @@ class DataSynchronizer(BaseSynchronizer):
         
         if not normalized_streams:
             raise ValueError("No valid streams after timestamp normalization")
+
+        if self._should_concatenate_streams(normalized_streams):
+            self.logger.info("Detected multiple independent flights - concatenating streams")
+            synchronized_df = self._concatenate_streams(normalized_streams)
+            return synchronized_df
         
         # Step 2: Find common time range
         time_range = self._find_common_time_range(normalized_streams)
@@ -125,12 +132,128 @@ class DataSynchronizer(BaseSynchronizer):
         
         # Step 5: Create synchronized DataFrame
         synchronized_df = pd.DataFrame(aligned_data)
+
+        # Simplify column names when only a single stream is present
+        if normalized_streams:
+            stream_aliases = {
+                name: Path(name).stem if Path(name).stem else str(name)
+                for name in normalized_streams
+            }
+            multiple_streams = len(stream_aliases) > 1
+            rename_map = {}
+
+            for col in synchronized_df.columns:
+                if col == 'timestamp':
+                    continue
+
+                renamed = False
+                for name, alias in stream_aliases.items():
+                    prefix = f"{name}_"
+                    if col.startswith(prefix):
+                        suffix = col[len(prefix):]
+                        if multiple_streams:
+                            rename_map[col] = f"{alias}_{suffix}"
+                        else:
+                            rename_map[col] = suffix
+                        renamed = True
+                        break
+
+                if not renamed and '_' in col:
+                    rename_map[col] = col.rsplit('_', 1)[-1]
+
+            if rename_map:
+                synchronized_df = synchronized_df.rename(columns=rename_map)
         
         # Step 6: Handle missing data and quality checks
         synchronized_df = self._handle_missing_data(synchronized_df)
         
         self.logger.info(f"Synchronized data shape: {synchronized_df.shape}")
         return synchronized_df
+
+    def _should_concatenate_streams(self, streams: Dict[str, pd.DataFrame]) -> bool:
+        """Heuristically determine if streams are separate flights that should be concatenated."""
+        if len(streams) <= 1:
+            return False
+
+        extensions = {Path(name).suffix.lower() for name in streams}
+        same_extension = len(extensions) == 1 and '' not in extensions
+
+        if not same_extension:
+            return False
+
+        total_pairs = 0
+        high_overlap_pairs = 0
+
+        for (name_a, df_a), (name_b, df_b) in combinations(streams.items(), 2):
+            cols_a = {col for col in df_a.columns if col != 'timestamp'}
+            cols_b = {col for col in df_b.columns if col != 'timestamp'}
+
+            if not cols_a or not cols_b:
+                continue
+
+            total_pairs += 1
+            overlap = len(cols_a & cols_b)
+            min_cols = min(len(cols_a), len(cols_b))
+
+            if min_cols == 0:
+                continue
+
+            overlap_ratio = overlap / min_cols
+
+            if overlap_ratio >= 0.8:
+                high_overlap_pairs += 1
+
+        return total_pairs > 0 and high_overlap_pairs == total_pairs
+
+    def _concatenate_streams(self, streams: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+        """Concatenate multiple flight streams sequentially."""
+        concatenated_frames: List[pd.DataFrame] = []
+        dt = 1.0 / self.target_frequency if self.target_frequency > 0 else 0.0
+
+        # Sort streams by their initial timestamp to maintain flight order
+        sorted_streams = sorted(
+            streams.items(),
+            key=lambda item: item[1]['timestamp'].iloc[0] if not item[1].empty else float('inf')
+        )
+
+        for index, (name, stream) in enumerate(sorted_streams):
+            if stream.empty:
+                self.logger.warning(f"Stream '{name}' is empty after normalization, skipping")
+                continue
+
+            resampled = self._resample_data(stream)
+            if resampled.empty:
+                self.logger.warning(f"Stream '{name}' produced no samples after resampling, skipping")
+                continue
+
+            resampled = resampled.sort_values('timestamp').reset_index(drop=True)
+
+            if concatenated_frames:
+                previous_end = concatenated_frames[-1]['timestamp'].iloc[-1]
+                current_start = resampled['timestamp'].iloc[0]
+
+                if previous_end is not None and current_start is not None:
+                    if current_start <= previous_end:
+                        offset = previous_end + dt - current_start
+                        resampled['timestamp'] = resampled['timestamp'] + offset
+                    else:
+                        # Ensure at least a single dt gap for clarity
+                        gap = current_start - previous_end
+                        if gap < dt:
+                            resampled['timestamp'] = resampled['timestamp'] + (dt - gap)
+
+            concatenated_frames.append(resampled)
+
+        if not concatenated_frames:
+            raise ValueError("No data available to concatenate after processing streams")
+
+        result_df = pd.concat(concatenated_frames, ignore_index=True)
+        result_df = result_df.sort_values('timestamp').reset_index(drop=True)
+
+        result_df = self._handle_missing_data(result_df)
+
+        self.logger.info(f"Concatenated data shape: {result_df.shape}")
+        return result_df
     
     def _normalize_timestamps(self, data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -172,26 +295,37 @@ class DataSynchronizer(BaseSynchronizer):
             data['timestamp'] = timestamps.astype('int64') / 1e9
             
         elif pd.api.types.is_numeric_dtype(timestamps):
-            # Assume already in seconds or microseconds
-            max_val = timestamps.max()
-            if max_val > 1e12:
-                data['timestamp'] = timestamps / 1e9  # nanoseconds → seconds
-            else:
-                diffs = timestamps.sort_values().diff().dropna().abs()
-                median_diff = diffs.median() if not diffs.empty else None
+            # Infer appropriate scaling based on timestamp differences
+            sorted_ts = timestamps.sort_values()
+            diffs = sorted_ts.diff().dropna().abs()
+            median_diff = diffs.median() if not diffs.empty else None
+            range_val = sorted_ts.iloc[-1] - sorted_ts.iloc[0] if len(sorted_ts) > 1 else 0.0
 
-                if max_val > 1e9:
-                    # Typical flight logs in microseconds range beyond ~30 minutes
-                    data['timestamp'] = timestamps / 1e6
-                elif max_val > 1e6:
-                    if median_diff is not None and median_diff <= 1e3:
-                        # Likely milliseconds despite large absolute magnitude
-                        data['timestamp'] = timestamps / 1e3
-                    else:
-                        data['timestamp'] = timestamps / 1e6
-                elif max_val > 1e3:
-                    data['timestamp'] = timestamps / 1e3
-            # Otherwise assume already in seconds
+            scale_divisor = 1.0
+
+            if median_diff is not None and median_diff > 0:
+                if median_diff >= 1e9:
+                    scale_divisor = 1e9  # nanoseconds → seconds
+                elif median_diff >= 1e6:
+                    scale_divisor = 1e6  # microseconds → seconds
+                elif median_diff >= 1e3:
+                    if range_val >= 1e3:
+                        scale_divisor = 1e3  # milliseconds → seconds
+            else:
+                # Fallback to overall range when consecutive diffs are zero
+                if range_val >= 1e9:
+                    scale_divisor = 1e9
+                elif range_val >= 1e6:
+                    scale_divisor = 1e6
+                elif range_val >= 1e3:
+                    scale_divisor = 1e3
+                elif range_val >= 1:
+                    scale_divisor = 1e3
+
+            if scale_divisor != 1.0:
+                data['timestamp'] = timestamps / scale_divisor
+            else:
+                data['timestamp'] = timestamps.astype('float64')
             
         else:
             raise ValueError(f"Unsupported timestamp format: {timestamps.dtype}")
@@ -206,21 +340,19 @@ class DataSynchronizer(BaseSynchronizer):
     
     def _find_common_time_range(self, streams: Dict[str, pd.DataFrame]) -> Optional[Tuple[float, float]]:
         """
-        Find the overlapping time range across all streams.
+        Find the time range for processing - either overlapping or concatenated.
         
         Args:
             streams: Dictionary of normalized data streams
             
         Returns:
-            Tuple of (start_time, end_time) or None if no overlap
+            Tuple of (start_time, end_time) or None if no valid range
         """
         if not streams:
             return None
         
-        # Find the latest start time and earliest end time
-        start_times = []
-        end_times = []
-        
+        # Collect time ranges for each stream
+        stream_ranges = []
         for name, stream in streams.items():
             if stream.empty or 'timestamp' not in stream.columns:
                 continue
@@ -229,18 +361,53 @@ class DataSynchronizer(BaseSynchronizer):
             if timestamps.empty:
                 continue
                 
-            start_times.append(timestamps.min())
-            end_times.append(timestamps.max())
+            stream_ranges.append((timestamps.min(), timestamps.max(), name))
         
-        if not start_times or not end_times:
+        if not stream_ranges:
             return None
+        
+        # Check if streams have significant overlap or are separate flights
+        if len(stream_ranges) > 1:
+            # Sort by start time
+            stream_ranges.sort(key=lambda x: x[0])
+            
+            # Check for overlap between consecutive streams
+            has_overlap = False
+            for i in range(len(stream_ranges) - 1):
+                current_end = stream_ranges[i][1]
+                next_start = stream_ranges[i + 1][0]
+                
+                # If there's significant overlap (more than 10% of either stream)
+                overlap_duration = max(0, current_end - next_start)
+                current_duration = stream_ranges[i][1] - stream_ranges[i][0]
+                next_duration = stream_ranges[i + 1][1] - stream_ranges[i + 1][0]
+                
+                if (overlap_duration > 0.1 * current_duration or 
+                    overlap_duration > 0.1 * next_duration):
+                    has_overlap = True
+                    break
+            
+            if not has_overlap:
+                # Separate flights - use full time range for concatenation
+                self.logger.info("Detected separate flights - will concatenate rather than find overlap")
+                overall_start = min(r[0] for r in stream_ranges)
+                overall_end = max(r[1] for r in stream_ranges)
+                return overall_start, overall_end
+        
+        # Default behavior: find overlapping time range
+        start_times = [r[0] for r in stream_ranges]
+        end_times = [r[1] for r in stream_ranges]
         
         common_start = max(start_times)
         common_end = min(end_times)
         
         # Ensure we have a valid time range
         if common_end <= common_start:
-            return None
+            # No overlap - fall back to concatenation approach
+            self.logger.warning("No overlapping time range found - using concatenation approach")
+            overall_start = min(start_times)
+            overall_end = max(end_times)
+            return overall_start, overall_end
         
         return common_start, common_end
     
@@ -271,33 +438,45 @@ class DataSynchronizer(BaseSynchronizer):
         Returns:
             DataFrame interpolated to target time axis
         """
+        # Collapse duplicate timestamps to avoid reindex failures
+        if data['timestamp'].duplicated().any():
+            aggregation = {
+                col: ('mean' if pd.api.types.is_numeric_dtype(data[col]) else 'last')
+                for col in data.columns
+                if col != 'timestamp'
+            }
+            data = data.groupby('timestamp', as_index=False).agg(aggregation)
+
+        # Ensure numeric data is in floating point to avoid nullable integer issues
+        numeric_cols = [
+            col for col in data.columns
+            if col != 'timestamp' and pd.api.types.is_numeric_dtype(data[col])
+        ]
+        if numeric_cols:
+            data[numeric_cols] = data[numeric_cols].apply(pd.to_numeric, errors='coerce').astype('float64')
+
         # Set timestamp as index for interpolation
         data_indexed = data.set_index('timestamp')
-        
-        # Create target DataFrame with time axis
-        target_df = pd.DataFrame(index=time_axis)
-        target_df.index.name = 'timestamp'
-        
-        # Interpolate each column
-        interpolated_data = {}
-        
+        target_index = pd.Index(time_axis, name='timestamp')
+        combined_index = data_indexed.index.union(target_index)
+
+        interpolated_frames = {}
+
         for col in data_indexed.columns:
-            if data_indexed[col].dtype in ['object', 'category']:
-                # Forward fill for categorical data
-                interpolated_data[col] = data_indexed[col].reindex(
-                    target_df.index, method='ffill'
-                )
+            series = data_indexed[col].reindex(combined_index)
+
+            if series.dtype in ['object', 'category']:
+                filled = series.ffill().bfill()
+                interpolated_frames[col] = filled.reindex(target_index)
             else:
-                # Linear interpolation for numeric data with more permissive settings
-                reindexed = data_indexed[col].reindex(target_df.index)
-                interpolated_data[col] = reindexed.interpolate(
-                    method=self.interpolation_method, 
-                    limit_area=None,  # Allow extrapolation at edges
+                interpolated = series.interpolate(
+                    method=self.interpolation_method,
+                    limit_area=None,
                     limit_direction='both'
                 )
-        
-        result_df = pd.DataFrame(interpolated_data, index=target_df.index)
-        result_df = result_df.reset_index()
+                interpolated_frames[col] = interpolated.reindex(target_index)
+
+        result_df = pd.DataFrame(interpolated_frames, index=target_index).reset_index()
         
         return result_df
     

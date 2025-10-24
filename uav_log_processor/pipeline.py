@@ -14,7 +14,7 @@ from .config import ProcessingConfig
 from .parsers import BaseLogParser, TLogParser, BinParser, RLogParser, TxtParser
 from .processors import (
     DataSynchronizer, MotionClassifier, GroundTruthGenerator,
-    ErrorCalculator, DatasetFormatter
+    ErrorCalculator, DatasetFormatter, MetadataGenerator, ReproducibilityManager
 )
 from .utils import FileHandler, DataValidator, TrajectoryVisualizer
 
@@ -46,6 +46,8 @@ class UAVLogProcessor:
         self.ground_truth_generator = GroundTruthGenerator(self.config.__dict__)
         self.error_calculator = ErrorCalculator(self.config.__dict__)
         self.dataset_formatter = DatasetFormatter(self.config.__dict__)
+        self.metadata_generator = MetadataGenerator(self.config.__dict__)
+        self.reproducibility_manager = ReproducibilityManager(self.config.__dict__)
         
         # Initialize utilities
         self.file_handler = FileHandler(self.config.__dict__)
@@ -85,15 +87,18 @@ class UAVLogProcessor:
             synchronized_data = self._synchronize_data(parsed_data)
             
             # Step 3: Classify motion segments
-            motion_labels = self._classify_motion(synchronized_data)
+            data_with_motion = self._classify_motion(synchronized_data)
             
-            # Step 4: Generate ground truth positions
-            ground_truth = self._generate_ground_truth(synchronized_data, motion_labels)
+            # Step 4: Standardize column names for downstream processing
+            standardized_data = self._standardize_columns(data_with_motion)
             
-            # Step 5: Calculate GPS errors
-            error_data = self._calculate_errors(synchronized_data, ground_truth)
+            # Step 5: Generate ground truth positions
+            ground_truth = self._generate_ground_truth(standardized_data, standardized_data.get('motion_label'))
             
-            # Step 6: Format and split dataset
+            # Step 6: Calculate GPS errors
+            error_data = self._calculate_errors(standardized_data, ground_truth)
+            
+            # Step 7: Format and split dataset
             datasets, metadata = self._format_datasets(error_data)
             
             # Step 7: Generate outputs
@@ -157,19 +162,37 @@ class UAVLogProcessor:
         self.intermediate_data['synchronized'] = synchronized
         return synchronized
     
-    def _classify_motion(self, data: pd.DataFrame) -> pd.Series:
+    def _classify_motion(self, data: pd.DataFrame) -> pd.DataFrame:
         """Classify motion segments in the data."""
         self.logger.info("Classifying motion segments...")
         
-        motion_labels = self.motion_classifier.classify(data)
+        # Use process method which adds motion_label column to the data
+        data_with_motion = self.motion_classifier.process(data)
         
-        stationary_count = (motion_labels == 'stationary').sum()
-        moving_count = (motion_labels == 'moving').sum()
+        if 'motion_label' in data_with_motion.columns:
+            motion_labels = data_with_motion['motion_label']
+            stationary_count = (motion_labels == 'stationary').sum()
+            moving_count = (motion_labels == 'moving').sum()
+            
+            self.logger.info(f"Classified {stationary_count} stationary and {moving_count} moving samples")
+            
+            self.intermediate_data['motion_labels'] = motion_labels
+        else:
+            self.logger.warning("Motion classification did not add motion_label column")
         
-        self.logger.info(f"Classified {stationary_count} stationary and {moving_count} moving samples")
+        return data_with_motion
+    
+    def _standardize_columns(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Standardize column names for downstream processing."""
+        self.logger.info("Standardizing column names...")
         
-        self.intermediate_data['motion_labels'] = motion_labels
-        return motion_labels
+        # Use dataset formatter to standardize column names
+        standardized_data = self.dataset_formatter.standardize_features(data)
+        
+        self.logger.info(f"Standardized {len(standardized_data.columns)} columns")
+        
+        self.intermediate_data['standardized'] = standardized_data
+        return standardized_data
     
     def _generate_ground_truth(self, data: pd.DataFrame, motion_labels: pd.Series) -> pd.DataFrame:
         """Generate ground truth positions using sensor fusion."""
@@ -186,19 +209,43 @@ class UAVLogProcessor:
         """Calculate GPS error vectors."""
         self.logger.info("Calculating GPS errors...")
         
-        error_data = self.error_calculator.calculate(data, ground_truth)
+        combined_data = data.copy()
+        for col in ground_truth.columns:
+            if col == 'timestamp' and col in combined_data.columns:
+                continue
+            combined_data[col] = ground_truth[col]
+
+        error_enriched_data = self.error_calculator.process(combined_data)
+        error_data = error_enriched_data[[
+            'gps_error_x',
+            'gps_error_y',
+            'gps_error_z',
+            'gps_error_norm'
+        ]]
         
         mean_error = error_data['gps_error_norm'].mean()
         self.logger.info(f"Mean GPS error: {mean_error:.3f} meters")
         
         self.intermediate_data['errors'] = error_data
-        return error_data
+        return error_enriched_data
     
     def _format_datasets(self, data: pd.DataFrame) -> Tuple[Dict[str, pd.DataFrame], Dict[str, Any]]:
         """Format and split datasets for ML training."""
         self.logger.info("Formatting datasets...")
         
         formatted_data, metadata = self.dataset_formatter.format_dataset(data)
+
+        schema_metadata = self.metadata_generator.process(formatted_data)
+
+        combined_metadata = schema_metadata.copy()
+        combined_metadata['normalization_stats'] = metadata.get('normalization_stats', {})
+        combined_metadata['feature_list'] = metadata.get('features', [])
+        combined_metadata['categorical_features'] = metadata.get('categorical_features', [])
+        combined_metadata['continuous_features'] = metadata.get('continuous_features', [])
+
+        combined_metadata['processing_config'] = {
+            key: value for key, value in self.config.__dict__.items() if not key.startswith('_')
+        }
         
         train_df, val_df, test_df = self.dataset_formatter.split_dataset(
             formatted_data, 
@@ -214,7 +261,7 @@ class UAVLogProcessor:
         
         self.logger.info(f"Split into train: {len(train_df)}, val: {len(val_df)}, test: {len(test_df)}")
         
-        return datasets, metadata
+        return datasets, combined_metadata
     
     def _generate_outputs(self, datasets: Dict[str, pd.DataFrame], 
                          metadata: Dict[str, Any], 
@@ -240,6 +287,11 @@ class UAVLogProcessor:
         self.file_handler.save_json(metadata, str(metadata_path))
         results['output_files'].append(str(metadata_path))
         
+        if self.config.save_intermediate:
+            aligned_path = output_path / "aligned_full.csv"
+            if aligned_path.exists() and str(aligned_path) not in results['output_files']:
+                results['output_files'].append(str(aligned_path))
+
         # Generate visualizations if enabled
         if self.config.create_visualizations and 'synchronized' in self.intermediate_data:
             viz_path = output_path / "visualization.png"

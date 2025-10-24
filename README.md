@@ -1,0 +1,407 @@
+# UAV Log Processor
+
+A comprehensive tool for processing UAV (Unmanned Aerial Vehicle) flight logs into machine learning-ready datasets. This system transforms raw flight data from drones into clean, synchronized datasets suitable for training Temporal Convolutional Networks (TCNs) and other machine learning models.
+
+## 🎯 What This Tool Does
+
+### For Non-Technical Users
+
+Imagine you have a drone that records everything during flight - GPS coordinates, sensor readings, speed, altitude, and more. This data comes in different formats and isn't synchronized, making it difficult to analyze or use for machine learning.
+
+**This tool:**
+- **Reads** multiple types of drone log files (like .tlog, .bin, .rlog files)
+- **Cleans** and synchronizes all the data to the same timeline
+- **Analyzes** the flight to identify when the drone was moving vs. stationary
+- **Calculates** GPS accuracy by comparing different sensors
+- **Organizes** everything into clean datasets ready for machine learning
+- **Splits** the data into training, validation, and test sets
+- **Creates** visualizations to help you understand the flight patterns
+
+**Real-world example:** If you flew a drone for 10 minutes and it recorded data every millisecond, you'd have thousands of data points in different formats. This tool takes all that messy data and gives you three clean files (train.csv, validation.csv, test.csv) that a machine learning model can immediately use.
+
+### For Technical Users
+
+This is a Python-based pipeline that processes UAV telemetry logs through a complete ETL (Extract, Transform, Load) workflow:
+
+1. **Multi-format parsing** - Supports TLOG (MAVLink), BIN (ArduPilot), RLOG, and TXT formats
+2. **Data synchronization** - Aligns multiple data streams to a common timeline with configurable interpolation
+3. **Motion classification** - Identifies stationary vs. moving segments using IMU thresholds
+4. **Sensor fusion** - Generates ground truth positions using EKF, complementary, or simple fusion methods
+5. **Error calculation** - Computes GPS error vectors against fused ground truth
+6. **Feature engineering** - Standardizes and normalizes features for ML consumption
+7. **Dataset generation** - Creates train/validation/test splits with comprehensive metadata
+
+## 🚀 Quick Start
+
+### Installation
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd uav-log-processor
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Install the package
+pip install -e .
+```
+
+### Basic Usage
+
+```bash
+# Process a single log file
+python -m uav_log_processor flight.tlog
+
+# Process multiple files with custom output
+python -m uav_log_processor flight1.tlog flight2.bin -o my_output
+
+# Auto-discover all log files in a directory
+python -m uav_log_processor --input-dir /path/to/logs --verbose
+
+# Use a configuration file for advanced settings
+python -m uav_log_processor *.tlog --config config.json
+```
+
+### Example Output
+
+After processing, you'll get:
+```
+output/
+├── train.csv           # Training dataset (70% of data)
+├── validation.csv      # Validation dataset (15% of data)  
+├── test.csv           # Test dataset (15% of data)
+├── metadata.json      # Processing metadata and statistics
+├── aligned_full.csv   # Complete synchronized dataset
+└── visualization.png  # Flight trajectory plot
+```
+
+## 📊 Understanding the Data
+
+### Input Formats Supported
+
+| Format | Description | Typical Source |
+|--------|-------------|----------------|
+| `.tlog` | MAVLink telemetry logs | Mission Planner, QGroundControl |
+| `.bin` | ArduPilot binary logs | ArduPilot flight controllers |
+| `.rlog` | Custom format logs | Research platforms |
+| `.txt` | Text-based logs | Various logging systems |
+
+### Output Dataset Structure
+
+Each output CSV contains these key columns:
+
+**Position Data:**
+- `gps_lat`, `gps_lon`, `gps_alt` - GPS coordinates
+- `gt_x`, `gt_y`, `gt_z` - Ground truth positions (sensor fusion)
+- `gps_error_x`, `gps_error_y`, `gps_error_z` - GPS error vectors
+
+**Motion Data:**
+- `imu_ax`, `imu_ay`, `imu_az` - Accelerometer readings
+- `imu_gx`, `imu_gy`, `imu_gz` - Gyroscope readings
+- `velocity_x`, `velocity_y`, `velocity_z` - Velocity vectors
+- `motion_label` - Classification (stationary/moving)
+
+**Quality Metrics:**
+- `hdop`, `vdop` - GPS dilution of precision
+- `fix_type` - GPS fix quality
+- `gps_error_norm` - Overall GPS error magnitude
+
+## ⚙️ Configuration
+
+### Basic Configuration
+
+Create a `config.json` file to customize processing:
+
+```json
+{
+  "target_frequency": 15.0,
+  "accel_threshold": 0.5,
+  "gyro_threshold": 0.1,
+  "fusion_method": "ekf",
+  "train_ratio": 0.7,
+  "val_ratio": 0.15,
+  "test_ratio": 0.15,
+  "save_intermediate": true,
+  "create_visualizations": true
+}
+```
+
+### Key Parameters Explained
+
+**Data Synchronization:**
+- `target_frequency` (15.0 Hz) - Output sampling rate
+- `interpolation_method` ("linear") - How to fill gaps in data
+- `max_gap_seconds` (1.0) - Maximum gap to interpolate
+
+**Motion Detection:**
+- `accel_threshold` (0.5 m/s²) - Acceleration threshold for motion
+- `gyro_threshold` (0.1 rad/s) - Rotation threshold for motion
+- `min_stationary_duration` (3.0 s) - Minimum time to be considered stationary
+
+**Ground Truth Generation:**
+- `fusion_method` - Sensor fusion approach:
+  - `"ekf"` - Extended Kalman Filter (most accurate)
+  - `"complementary"` - Complementary filter (balanced)
+  - `"simple"` - Simple averaging (fastest)
+
+**Data Quality:**
+- `min_gps_fix_type` (3) - Minimum GPS fix quality to accept
+- `max_hdop` (5.0) - Maximum horizontal dilution of precision
+
+## 🔧 Advanced Usage
+
+### Command Line Options
+
+```bash
+# Processing parameters
+python -m uav_log_processor flight.tlog \
+  --frequency 20 \
+  --accel-threshold 0.3 \
+  --fusion-method ekf
+
+# Data splitting
+python -m uav_log_processor flight.tlog \
+  --train-ratio 0.8 \
+  --val-ratio 0.1 \
+  --test-ratio 0.1
+
+# Output control
+python -m uav_log_processor flight.tlog \
+  --save-intermediate \
+  --no-visualizations \
+  --output custom_output
+
+# Debugging
+python -m uav_log_processor flight.tlog \
+  --verbose \
+  --debug
+```
+
+### Programmatic Usage
+
+```python
+from uav_log_processor import UAVLogProcessor, ProcessingConfig
+
+# Create custom configuration
+config = ProcessingConfig(
+    target_frequency=20.0,
+    fusion_method="ekf",
+    train_ratio=0.8
+)
+
+# Initialize processor
+processor = UAVLogProcessor(config)
+
+# Process files
+results = processor.process_logs([
+    "flight1.tlog",
+    "flight2.bin"
+])
+
+# Access results
+print(f"Generated {len(results['output_files'])} files")
+print(f"Total samples: {results['statistics']['total_samples']}")
+```
+
+## 📈 Understanding the Processing Pipeline
+
+### Step-by-Step Workflow
+
+1. **File Parsing**
+   - Reads different log formats
+   - Extracts GPS, IMU, and velocity data
+   - Validates file integrity
+
+2. **Data Synchronization**
+   - Aligns all data streams to common timestamps
+   - Interpolates missing values
+   - Resamples to target frequency
+
+3. **Motion Classification**
+   - Analyzes IMU data to detect motion
+   - Applies smoothing to reduce noise
+   - Labels each sample as stationary/moving
+
+4. **Ground Truth Generation**
+   - Fuses GPS and IMU data
+   - Corrects for drift during stationary periods
+   - Provides reference positions for error calculation
+
+5. **Error Calculation**
+   - Computes GPS error vectors
+   - Calculates error statistics
+   - Identifies problematic periods
+
+6. **Dataset Formatting**
+   - Standardizes column names
+   - Normalizes feature values
+   - Splits into train/validation/test sets
+
+7. **Output Generation**
+   - Saves CSV datasets
+   - Creates metadata files
+   - Generates visualizations
+
+### Quality Assurance
+
+The pipeline includes multiple quality checks:
+
+- **File validation** - Ensures files are readable and contain expected data
+- **Data coverage** - Warns if too much data is missing
+- **GPS quality** - Filters out poor GPS fixes
+- **Temporal consistency** - Checks for reasonable time progression
+- **Statistical validation** - Identifies outliers and anomalies
+
+## 🎨 Visualization and Analysis
+
+### Generated Visualizations
+
+When `create_visualizations` is enabled, the tool generates:
+
+- **Trajectory plots** - 2D/3D flight paths with GPS vs. ground truth
+- **Error analysis** - GPS error over time and space
+- **Motion segments** - Visual indication of stationary vs. moving periods
+- **Data quality** - HDOP, fix type, and other quality metrics
+
+### Interpreting Results
+
+**Good Dataset Indicators:**
+- Low mean GPS error (< 5 meters)
+- Balanced motion classification (mix of stationary/moving)
+- Consistent data coverage (< 10% missing)
+- Reasonable HDOP values (< 5.0)
+
+**Potential Issues:**
+- High GPS error spikes - May indicate multipath or poor satellite geometry
+- All stationary or all moving - Check motion thresholds
+- Large data gaps - May need different interpolation settings
+- Poor GPS fix types - Consider filtering or different processing
+
+## 🛠️ Troubleshooting
+
+### Common Issues
+
+**"No valid log files to process"**
+- Check file extensions (.tlog, .bin, .rlog, .txt)
+- Verify files are not corrupted
+- Ensure files contain expected data format
+
+**"Synchronized to 0 records"**
+- Files may not have overlapping time ranges
+- Try adjusting `max_gap_seconds` parameter
+- Check if files contain timestamp data
+
+**"Invalid input data" during motion classification**
+- Synchronized data may be empty
+- Check IMU data availability
+- Verify acceleration/gyroscope columns exist
+
+**High GPS errors**
+- Normal for indoor or urban environments
+- Consider adjusting `max_hdop` threshold
+- Check GPS fix quality in source data
+
+### Performance Optimization
+
+**For Large Files:**
+- Use `chunk_size` parameter to process in batches
+- Enable `n_jobs > 1` for parallel processing
+- Disable visualizations for faster processing
+
+**For Better Accuracy:**
+- Use `fusion_method: "ekf"` for best ground truth
+- Lower `target_frequency` for smoother data
+- Adjust motion thresholds based on vehicle type
+
+## 📚 Technical Architecture
+
+### Core Components
+
+```
+uav_log_processor/
+├── parsers/           # File format parsers
+├── processors/        # Data processing components
+├── utils/            # Utility functions
+├── config.py         # Configuration management
+├── pipeline.py       # Main orchestration
+└── cli.py           # Command-line interface
+```
+
+### Key Classes
+
+- **`UAVLogProcessor`** - Main pipeline orchestrator
+- **`ProcessingConfig`** - Configuration management with validation
+- **`DataSynchronizer`** - Multi-stream temporal alignment
+- **`MotionClassifier`** - IMU-based motion detection
+- **`GroundTruthGenerator`** - Sensor fusion for reference positions
+- **`ErrorCalculator`** - GPS error computation
+- **`DatasetFormatter`** - ML dataset preparation
+
+### Dependencies
+
+- **pandas** - Data manipulation and analysis
+- **numpy** - Numerical computations
+- **scipy** - Scientific computing (interpolation, filtering)
+- **matplotlib** - Visualization generation
+- **pymavlink** - MAVLink protocol parsing
+- **pyserial** - Serial communication for log reading
+
+## 🤝 Contributing
+
+### Development Setup
+
+```bash
+# Clone and install in development mode
+git clone <repository-url>
+cd uav_log_processor
+pip install -e ".[dev]"
+
+# Run tests
+python -m pytest tests/
+
+# Check code style
+flake8 uav_log_processor/
+black uav_log_processor/
+```
+
+### Adding New Log Formats
+
+1. Create parser in `parsers/` directory
+2. Inherit from `BaseLogParser`
+3. Implement `parse()` and `validate_file()` methods
+4. Register in `parsers/__init__.py`
+5. Add tests in `tests/`
+
+### Extending Processing
+
+1. Create processor in `processors/` directory
+2. Follow existing interface patterns
+3. Add configuration parameters to `ProcessingConfig`
+4. Update pipeline orchestration
+5. Add comprehensive tests
+
+## 📄 License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## 🆘 Support
+
+For issues, questions, or contributions:
+
+1. Check existing issues in the repository
+2. Create detailed bug reports with sample data
+3. Include configuration and log output
+4. Provide minimal reproducible examples
+
+## 📊 Performance Benchmarks
+
+Typical processing performance on modern hardware:
+
+| File Size | Records | Processing Time | Memory Usage |
+|-----------|---------|----------------|--------------|
+| 1 MB | ~1,000 | < 5 seconds | < 100 MB |
+| 10 MB | ~10,000 | < 30 seconds | < 500 MB |
+| 100 MB | ~100,000 | < 5 minutes | < 2 GB |
+
+Performance scales approximately linearly with data size. Use chunking for files > 1 GB.

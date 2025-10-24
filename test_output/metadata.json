@@ -1,0 +1,198 @@
+{
+  "total_samples": 1898,
+  "features": [
+    "timestamp",
+    "gps_x",
+    "gps_y",
+    "gps_z",
+    "imu_ax",
+    "imu_ay",
+    "imu_az",
+    "imu_gx",
+    "imu_gy",
+    "imu_gz",
+    "velocity_x",
+    "velocity_y",
+    "velocity_z",
+    "hdop",
+    "vdop",
+    "fix_type",
+    "motion_label",
+    "ground_truth_x",
+    "ground_truth_y",
+    "ground_truth_z",
+    "gps_error_x",
+    "gps_error_y",
+    "gps_error_z",
+    "gps_error_norm"
+  ],
+  "normalization_stats": {
+    "gps_x": {
+      "mean": 0.0,
+      "std": 1.0,
+      "normalized": false
+    },
+    "gps_y": {
+      "mean": 0.0,
+      "std": 1.0,
+      "normalized": false
+    },
+    "gps_z": {
+      "mean": 0.01391628410226935,
+      "std": 0.00619113494240021,
+      "normalized": true
+    },
+    "imu_ax": {
+      "mean": -0.3864757162268711,
+      "std": 1.3467396307669177,
+      "normalized": true
+    },
+    "imu_ay": {
+      "mean": -0.2108937941450015,
+      "std": 1.1721316737957697,
+      "normalized": true
+    },
+    "imu_az": {
+      "mean": -9.518297077702856,
+      "std": 1.4456597801931284,
+      "normalized": true
+    },
+    "imu_gx": {
+      "mean": 0.007276290905558558,
+      "std": 0.6357092023042966,
+      "normalized": true
+    },
+    "imu_gy": {
+      "mean": -0.12158785811133019,
+      "std": 1.0989808582390896,
+      "normalized": true
+    },
+    "imu_gz": {
+      "mean": 0.03709500323175244,
+      "std": 0.5693203859002068,
+      "normalized": true
+    },
+    "velocity_x": {
+      "mean": 0.01752644585764903,
+      "std": 0.052600235322750696,
+      "normalized": true
+    },
+    "velocity_y": {
+      "mean": -0.0025700246364103053,
+      "std": 0.04127574756014569,
+      "normalized": true
+    },
+    "velocity_z": {
+      "mean": 0.005917611308022268,
+      "std": 0.055527142513835816,
+      "normalized": true
+    },
+    "hdop": {
+      "mean": 655.3500000000001,
+      "std": 1.1371679867554812e-13,
+      "normalized": true
+    },
+    "vdop": {
+      "mean": 655.3500000000001,
+      "std": 1.1371679867554812e-13,
+      "normalized": true
+    },
+    "ground_truth_x": {
+      "mean": 0.0,
+      "std": 1.0,
+      "normalized": false
+    },
+    "ground_truth_y": {
+      "mean": 0.0,
+      "std": 1.0,
+      "normalized": false
+    },
+    "ground_truth_z": {
+      "mean": 0.01390999257689042,
+      "std": 0.004867860844660058,
+      "normalized": true
+    },
+    "gps_error_x": {
+      "mean": 0.0,
+      "std": 1.0,
+      "normalized": false
+    },
+    "gps_error_y": {
+      "mean": 0.0,
+      "std": 1.0,
+      "normalized": false
+    },
+    "gps_error_z": {
+      "mean": 6.29152537892923e-06,
+      "std": 0.003910569245278488,
+      "normalized": true
+    },
+    "gps_error_norm": {
+      "mean": 0.002931546682776263,
+      "std": 0.0025872949541769605,
+      "normalized": true
+    },
+    "fix_type": {
+      "type": "ordinal",
+      "unique_values": [
+        0.0
+      ],
+      "encoded": true
+    }
+  },
+  "categorical_features": [
+    "fix_type"
+  ],
+  "continuous_features": [
+    "gps_x",
+    "gps_y",
+    "gps_z",
+    "imu_ax",
+    "imu_ay",
+    "imu_az",
+    "imu_gx",
+    "imu_gy",
+    "imu_gz",
+    "velocity_x",
+    "velocity_y",
+    "velocity_z",
+    "hdop",
+    "vdop",
+    "ground_truth_x",
+    "ground_truth_y",
+    "ground_truth_z",
+    "gps_error_x",
+    "gps_error_y",
+    "gps_error_z",
+    "gps_error_norm"
+  ],
+  "processing_config": {
+    "target_frequency": 15.0,
+    "interpolation_method": "linear",
+    "max_gap_seconds": 1.0,
+    "min_data_coverage": 0.5,
+    "accel_threshold": 0.5,
+    "gyro_threshold": 0.1,
+    "min_stationary_duration": 3.0,
+    "motion_window_size": 5.0,
+    "coordinate_system": "ENU",
+    "home_point_method": "first_fix",
+    "fusion_method": "ekf",
+    "drift_correction": true,
+    "smoothing_method": "cubic_spline",
+    "min_gps_fix_type": 3,
+    "max_hdop": 5.0,
+    "max_data_loss_warning": 0.1,
+    "normalization_method": "zscore",
+    "train_ratio": 0.7,
+    "val_ratio": 0.15,
+    "test_ratio": 0.15,
+    "output_dir": "test_output",
+    "save_intermediate": true,
+    "create_visualizations": true,
+    "chunk_size": null,
+    "n_jobs": 1,
+    "verbose": true,
+    "parser_configs": {}
+  }
+}
