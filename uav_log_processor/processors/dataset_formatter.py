@@ -11,6 +11,9 @@ import numpy as np
 from pathlib import Path
 import logging
 
+# Suppress pandas future warning for fillna downcasting
+pd.set_option('future.no_silent_downcasting', True)
+
 from .base import BaseFormatter
 
 
