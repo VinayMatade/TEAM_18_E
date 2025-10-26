@@ -8,7 +8,8 @@ from pathlib import Path
 # Read requirements
 requirements_path = Path(__file__).parent / "requirements.txt"
 with open(requirements_path) as f:
-    requirements = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+    requirements = [line.strip() for line in f if line.strip()
+                    and not line.startswith("#")]
 
 # Read README if it exists
 readme_path = Path(__file__).parent / "README.md"
@@ -23,7 +24,7 @@ setup(
     description="Process UAV flight logs into ML-ready datasets for GPS error correction",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    author="UAV Log Processor Team",
+    author="Vinay Matade",
     packages=find_packages(),
     python_requires=">=3.8",
     install_requires=requirements,
