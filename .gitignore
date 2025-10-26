@@ -142,12 +142,14 @@ cython_debug/
 # UAV Log Processor specific
 output/
 test_output/
-*.tlog
-*.bin
-*.rlog
 *.log
 !requirements.txt
 !setup.py
+!files/
+!files/**/*.log
+!files/**/*.rlog
+!files/**/*.tlog
+!files/**/*.bin
 
 # OS specific
 .DS_Store
