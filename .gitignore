@@ -173,5 +173,5 @@ config.json
 
 # Data files
 data/
-logs/
 samples/
+!files/logs/
