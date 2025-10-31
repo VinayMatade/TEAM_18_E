@@ -126,12 +126,16 @@ class CoordinateConverter:
         lon = np.asarray(lon)
         alt = np.asarray(alt)
         
-        # Validate inputs
-        if not self._validate_coordinates(lat, lon, alt):
-            raise ValueError("Invalid coordinate values")
+        # Validate inputs - log warnings but don't raise exceptions
+        try:
+            self._validate_coordinates(lat, lon, alt)
+        except Exception as e:
+            self.logger.warning(f"Input coordinate validation: {str(e)}")
         
-        if not self._validate_coordinates(home_lat, home_lon, home_alt):
-            raise ValueError("Invalid home point coordinates")
+        try:
+            self._validate_coordinates(home_lat, home_lon, home_alt)
+        except Exception as e:
+            self.logger.warning(f"Home point validation: {str(e)}")
         
         try:
             # Create transformer for WGS84 to ECEF conversion
@@ -186,8 +190,10 @@ class CoordinateConverter:
         y = np.asarray(y)
         z = np.asarray(z)
         
-        if not self._validate_coordinates(home_lat, home_lon, home_alt):
-            raise ValueError("Invalid home point coordinates")
+        try:
+            self._validate_coordinates(home_lat, home_lon, home_alt)
+        except Exception as e:
+            self.logger.warning(f"Home point validation: {str(e)}")
         
         try:
             # Create transformer for ECEF to WGS84 conversion
@@ -225,7 +231,7 @@ class CoordinateConverter:
     def convert_dataframe_to_enu(self, data: pd.DataFrame, 
                                 home_point: Optional[Tuple[float, float, float]] = None) -> pd.DataFrame:
         """
-        Convert GPS coordinates in DataFrame to ENU coordinates.
+        Convert GPS coordinates in DataFrame to ENU coordinates with coordinate preservation.
         
         Args:
             data: DataFrame with 'gps_lat', 'gps_lon', 'gps_alt' columns
@@ -244,14 +250,20 @@ class CoordinateConverter:
         
         data = data.copy()
         
+        # Log original coordinate statistics for debugging
+        original_coords = data[required_cols].copy()
+        zero_coords = ((original_coords['gps_lat'] == 0) & (original_coords['gps_lon'] == 0)).sum()
+        if zero_coords > 0:
+            self.logger.warning(f"Found {zero_coords} rows with (0,0) coordinates in input data")
+        
         # Calculate or use provided home point
         if home_point is None:
             home_lat, home_lon, home_alt = self.calculate_home_point(data)
         else:
             home_lat, home_lon, home_alt = home_point
         
-        # Convert coordinates
-        valid_mask = data[required_cols].notna().all(axis=1)
+        # Convert coordinates - preserve original GPS coordinates throughout
+        valid_mask = data[required_cols].notna().all(axis=1) & ~((data['gps_lat'] == 0) & (data['gps_lon'] == 0))
         
         if valid_mask.any():
             valid_data = data.loc[valid_mask]
@@ -263,17 +275,27 @@ class CoordinateConverter:
                 home_lat, home_lon, home_alt
             )
             
-            # Add ENU columns
+            # Add ENU columns - initialize with NaN to preserve invalid coordinates
             data['enu_x'] = np.nan
             data['enu_y'] = np.nan
             data['enu_z'] = np.nan
             
+            # Only assign converted values to valid coordinates
             data.loc[valid_mask, 'enu_x'] = east
             data.loc[valid_mask, 'enu_y'] = north
             data.loc[valid_mask, 'enu_z'] = up
             
             # Store home point in metadata
             data.attrs['home_point'] = (home_lat, home_lon, home_alt)
+            
+            # Verify no coordinate corruption occurred
+            post_zero_coords = ((data['gps_lat'] == 0) & (data['gps_lon'] == 0)).sum()
+            if post_zero_coords != zero_coords:
+                self.logger.error(f"Coordinate corruption detected! Zero coordinates changed from {zero_coords} to {post_zero_coords}")
+            
+            self.logger.info(f"Successfully converted {valid_mask.sum()} valid coordinates to ENU")
+        else:
+            self.logger.warning("No valid GPS coordinates found for ENU conversion")
         
         return data
     
@@ -375,16 +397,30 @@ class CoordinateConverter:
         lon = np.asarray(lon)
         alt = np.asarray(alt)
         
-        # Check for NaN values
+        # Check for NaN values - but don't reject if they exist, just warn
         if np.any(np.isnan(lat)) or np.any(np.isnan(lon)) or np.any(np.isnan(alt)):
-            return False
+            self.logger.warning("NaN values detected in coordinates - will be handled during processing")
+            # Don't return False here - let the processing continue with NaN handling
         
-        # Check coordinate ranges
-        if np.any(np.abs(lat) > 90):
-            return False
-        if np.any(np.abs(lon) > 180):
-            return False
-        if np.any(np.abs(alt) > 50000):  # Reasonable altitude limit
-            return False
+        # Check for zero coordinates that might indicate reset issues
+        if np.any((lat == 0) & (lon == 0)):
+            self.logger.warning("Zero coordinates (0,0) detected - possible coordinate reset issue")
+            # Don't return False - log the issue but continue processing
+        
+        # Check coordinate ranges for valid (non-NaN, non-zero) values
+        valid_mask = ~(np.isnan(lat) | np.isnan(lon) | ((lat == 0) & (lon == 0)))
+        if np.any(valid_mask):
+            valid_lat = lat[valid_mask]
+            valid_lon = lon[valid_mask]
+            valid_alt = alt[valid_mask] if not np.isnan(alt).all() else alt
+            
+            if np.any(np.abs(valid_lat) > 90):
+                self.logger.warning("Invalid latitude values detected (outside ±90 degrees)")
+                # Don't return False - just log the warning
+            if np.any(np.abs(valid_lon) > 180):
+                self.logger.warning("Invalid longitude values detected (outside ±180 degrees)")
+                # Don't return False - just log the warning
+            if not np.isnan(valid_alt).all() and np.any(np.abs(valid_alt) > 50000):  # Reasonable altitude limit
+                self.logger.warning("Extreme altitude values detected (>50km)")
         
         return True

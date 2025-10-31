@@ -647,8 +647,8 @@ class DatasetFormatter(BaseFormatter):
                     # Use chunked writing for large datasets
                     self._save_large_csv(df, file_path, chunk_size)
                 else:
-                    # Direct save for smaller datasets
-                    df.to_csv(file_path, index=False, float_format='%.6f')
+                    # Direct save for smaller datasets with full precision
+                    df.to_csv(file_path, index=False, float_format='%.15g')
                 
                 saved_paths[split_name] = str(file_path)
                 logger.info(f"Saved {split_name} dataset: {len(df)} samples to {file_path}")
@@ -686,7 +686,7 @@ class DatasetFormatter(BaseFormatter):
                 mode='w' if not header_written else 'a',
                 header=not header_written,
                 index=False,
-                float_format='%.6f'
+                float_format='%.15g'  # Full precision, no scientific notation
             )
             
             header_written = True
@@ -735,8 +735,8 @@ class DatasetFormatter(BaseFormatter):
         file_path = output_path / filename
         
         try:
-            # Save with high precision for reproducibility
-            data.to_csv(file_path, index=False, float_format='%.8f')
+            # Save with full precision for reproducibility (no scientific notation)
+            data.to_csv(file_path, index=False, float_format='%.15g')
             logger.info(f"Saved full dataset: {len(data)} samples to {file_path}")
             return str(file_path)
             

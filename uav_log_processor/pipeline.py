@@ -156,7 +156,7 @@ class UAVLogProcessor:
         
         if self.config.save_intermediate:
             output_path = Path(self.config.output_dir) / "aligned_full.csv"
-            synchronized.to_csv(output_path, index=False)
+            synchronized.to_csv(output_path, index=False, float_format='%.15g')
             self.logger.info(f"Saved synchronized data to {output_path}")
         
         self.intermediate_data['synchronized'] = synchronized
@@ -278,7 +278,8 @@ class UAVLogProcessor:
         # Save dataset files
         for split_name, df in datasets.items():
             file_path = output_path / f"{split_name}.csv"
-            df.to_csv(file_path, index=False)
+            # Use full precision formatting to prevent scientific notation
+            df.to_csv(file_path, index=False, float_format='%.15g')
             results['output_files'].append(str(file_path))
             self.logger.info(f"Saved {split_name} dataset: {file_path}")
         

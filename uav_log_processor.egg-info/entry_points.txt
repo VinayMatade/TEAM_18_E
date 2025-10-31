@@ -1,0 +1,2 @@
+[console_scripts]
+uav-log-processor = uav_log_processor.cli:main

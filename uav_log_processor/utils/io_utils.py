@@ -74,13 +74,14 @@ class FileHandler:
     def find_log_files(self, directory: str, extensions: Optional[List[str]] = None) -> List[str]:
         """
         Find log files in directory with specified extensions.
+        Automatically handles .log file renaming when no .txt files are present.
         
         Args:
             directory: Directory to search
             extensions: List of file extensions to look for
             
         Returns:
-            List of found file paths
+            List of found file paths (with .log files renamed to .txt if needed)
         """
         if extensions is None:
             extensions = ['.tlog', '.bin', '.rlog', '.txt', '.log']
@@ -91,7 +92,51 @@ class FileHandler:
         for ext in extensions:
             found_files.extend(directory_path.glob(f"*{ext}"))
         
+        # Check if we have .txt files
+        txt_files = [f for f in found_files if f.suffix.lower() == '.txt']
+        log_files = [f for f in found_files if f.suffix.lower() == '.log']
+        
+        # If no .txt files but we have .log files, rename them
+        if not txt_files and log_files:
+            renamed_files = self.rename_log_files_to_txt(log_files)
+            # Replace .log files with renamed .txt files in the list
+            found_files = [f for f in found_files if f.suffix.lower() != '.log']
+            found_files.extend([Path(f) for f in renamed_files])
+        
         return [str(f) for f in sorted(found_files)]
+    
+    def rename_log_files_to_txt(self, log_files: List[Path]) -> List[str]:
+        """
+        Rename .log files to .txt extension for processing.
+        
+        Args:
+            log_files: List of .log file paths
+            
+        Returns:
+            List of renamed file paths
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        renamed_files = []
+        
+        for log_file in log_files:
+            try:
+                # Create new filename with .txt extension
+                txt_file = log_file.with_suffix('.txt')
+                
+                # Rename the file
+                log_file.rename(txt_file)
+                renamed_files.append(str(txt_file))
+                
+                logger.info(f"Renamed {log_file.name} to {txt_file.name} for processing")
+                
+            except Exception as e:
+                logger.error(f"Failed to rename {log_file}: {str(e)}")
+                # Keep original file in list if rename fails
+                renamed_files.append(str(log_file))
+        
+        return renamed_files
     
     def validate_output_directory(self, output_dir: str) -> bool:
         """
