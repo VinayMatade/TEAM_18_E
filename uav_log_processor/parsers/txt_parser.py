@@ -34,6 +34,125 @@ class TxtParser(BaseLogParser):
         # Format definitions cache
         self.format_definitions = {}
         
+        # GPS validation configuration
+        self.gps_config = {
+            'min_fix_type': config.get('min_gps_fix_type', 3) if config else 3,
+            'auto_detect_bounds': config.get('auto_detect_gps_bounds', True) if config else True,
+            'lat_bounds': config.get('gps_lat_bounds', (-90, 90)) if config else (-90, 90),
+            'lon_bounds': config.get('gps_lon_bounds', (-180, 180)) if config else (-180, 180),
+            'max_coordinate_jump': config.get('max_gps_coordinate_jump', 1.0) if config else 1.0  # degrees
+        }
+        
+        # Cache for detected GPS bounds
+        self._detected_gps_bounds = None
+    
+    def _detect_gps_bounds(self, file_path: str) -> Optional[Dict[str, Tuple[float, float]]]:
+        """
+        Auto-detect reasonable GPS coordinate bounds from the log file.
+        
+        Args:
+            file_path: Path to the log file
+            
+        Returns:
+            Dictionary with 'lat' and 'lon' bounds, or None if detection fails
+        """
+        if not self.gps_config['auto_detect_bounds']:
+            return None
+        
+        try:
+            valid_coordinates = []
+            
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                for line_num, line in enumerate(f, 1):
+                    if line_num > 10000:  # Limit scan to first 10k lines for performance
+                        break
+                    
+                    line = line.strip()
+                    if not line or not line.startswith('GPS,'):
+                        continue
+                    
+                    try:
+                        parts = [p.strip() for p in line.split(',')]
+                        if len(parts) >= 10:
+                            # Parse GPS coordinates (assuming standard ArduPilot format)
+                            fix_type = float(parts[3]) if parts[3] else 0
+                            lat = float(parts[8]) if parts[8] else np.nan
+                            lon = float(parts[9]) if parts[9] else np.nan
+                            
+                            # Only consider coordinates with good GPS fix
+                            if (fix_type >= self.gps_config['min_fix_type'] and 
+                                not np.isnan(lat) and not np.isnan(lon) and
+                                -90 <= lat <= 90 and -180 <= lon <= 180):
+                                valid_coordinates.append((lat, lon))
+                                
+                    except (ValueError, IndexError):
+                        continue
+            
+            if len(valid_coordinates) < 10:  # Need at least 10 valid points
+                self.logger.warning("Insufficient valid GPS coordinates for auto-detection")
+                return None
+            
+            # Calculate bounds with some margin
+            lats, lons = zip(*valid_coordinates)
+            lat_min, lat_max = min(lats), max(lats)
+            lon_min, lon_max = min(lons), max(lons)
+            
+            # Add 10% margin to bounds
+            lat_margin = max(0.1, (lat_max - lat_min) * 0.1)
+            lon_margin = max(0.1, (lon_max - lon_min) * 0.1)
+            
+            bounds = {
+                'lat': (lat_min - lat_margin, lat_max + lat_margin),
+                'lon': (lon_min - lon_margin, lon_max + lon_margin)
+            }
+            
+            self.logger.info(f"Auto-detected GPS bounds: Lat {bounds['lat']}, Lon {bounds['lon']}")
+            return bounds
+            
+        except Exception as e:
+            self.logger.warning(f"GPS bounds auto-detection failed: {str(e)}")
+            return None
+    
+    def _is_valid_gps_coordinate(self, lat: float, lon: float, fix_type: Optional[float] = None) -> bool:
+        """
+        Check if GPS coordinates are valid based on configuration and detected bounds.
+        
+        Args:
+            lat: Latitude
+            lon: Longitude  
+            fix_type: GPS fix type (optional)
+            
+        Returns:
+            True if coordinates are valid
+        """
+        # Check fix type if provided
+        if fix_type is not None and fix_type < self.gps_config['min_fix_type']:
+            return False
+        
+        # Check for NaN values
+        if np.isnan(lat) or np.isnan(lon):
+            return False
+        
+        # Check global bounds
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            return False
+        
+        # Check configured bounds
+        lat_bounds = self.gps_config['lat_bounds']
+        lon_bounds = self.gps_config['lon_bounds']
+        if not (lat_bounds[0] <= lat <= lat_bounds[1] and lon_bounds[0] <= lon <= lon_bounds[1]):
+            return False
+        
+        # Check detected bounds if available
+        if self._detected_gps_bounds:
+            detected_lat_bounds = self._detected_gps_bounds['lat']
+            detected_lon_bounds = self._detected_gps_bounds['lon']
+            if not (detected_lat_bounds[0] <= lat <= detected_lat_bounds[1] and 
+                    detected_lon_bounds[0] <= lon <= detected_lon_bounds[1]):
+                return False
+        
+        return True
+        
     def parse(self, file_path: str) -> pd.DataFrame:
         """
         Parse text-based log file and extract sensor data.
@@ -54,6 +173,10 @@ class TxtParser(BaseLogParser):
         self.logger.info(f"Parsing text log file: {file_path}")
         
         try:
+            # Auto-detect GPS bounds if enabled
+            if self.gps_config['auto_detect_bounds']:
+                self._detected_gps_bounds = self._detect_gps_bounds(file_path)
+            
             # Detect log format
             log_format = self._detect_format(file_path)
             
@@ -220,14 +343,22 @@ class TxtParser(BaseLogParser):
             # Parse message-specific data
             if msg_type == 'GPS' and len(parts) >= 4:
                 try:
-                    msg_data.update({
-                        'fix_type': _get_numeric(['Status', 'FixType'], fallback_idx=3),
-                        'hdop': _get_numeric(['HDop', 'HAcc'], fallback_idx=6),
-                        'gps_lat': _get_numeric(['Lat', 'Latitude'], fallback_idx=8, is_latlon=True),
-                        'gps_lon': _get_numeric(['Lng', 'Lon', 'Longitude'], fallback_idx=7, is_latlon=True),
-                        'gps_alt': _get_numeric(['Alt', 'Altitude'], fallback_idx=9),
-                        'velocity_x': _get_numeric(['Spd', 'Speed'], fallback_idx=10)
-                    })
+                    fix_type = _get_numeric(['Status', 'FixType'], fallback_idx=3)
+                    gps_lat = _get_numeric(['Lat', 'Latitude'], fallback_idx=8, is_latlon=True)
+                    gps_lon = _get_numeric(['Lng', 'Lon', 'Longitude'], fallback_idx=9, is_latlon=True)
+                    gps_alt = _get_numeric(['Alt', 'Altitude'], fallback_idx=10)
+                    
+                    # Only include GPS data with valid coordinates
+                    if self._is_valid_gps_coordinate(gps_lat, gps_lon, fix_type):
+                        msg_data.update({
+                            'fix_type': fix_type,
+                            'hdop': _get_numeric(['HDop', 'HAcc'], fallback_idx=7),
+                            'gps_lat': gps_lat,
+                            'gps_lon': gps_lon,
+                            'gps_alt': gps_alt,
+                            'velocity_x': _get_numeric(['Spd', 'Speed'], fallback_idx=11)
+                        })
+                    # If GPS data is invalid, leave GPS fields as NaN (don't update them)
                 except (ValueError, IndexError):
                     pass
                     
@@ -257,11 +388,18 @@ class TxtParser(BaseLogParser):
                     
             elif msg_type in ['AHR2', 'AHRS'] and len(parts) >= 6:
                 try:
-                    msg_data.update({
-                        'gps_lat': float(parts[3]) if parts[3] else np.nan,
-                        'gps_lon': float(parts[4]) if parts[4] else np.nan,
-                        'gps_alt': float(parts[5]) if parts[5] else np.nan
-                    })
+                    gps_lat = float(parts[3]) if parts[3] else np.nan
+                    gps_lon = float(parts[4]) if parts[4] else np.nan
+                    gps_alt = float(parts[5]) if parts[5] else np.nan
+                    
+                    # Only include GPS data with valid coordinates
+                    if self._is_valid_gps_coordinate(gps_lat, gps_lon):
+                        msg_data.update({
+                            'gps_lat': gps_lat,
+                            'gps_lon': gps_lon,
+                            'gps_alt': gps_alt
+                        })
+                    # If GPS data is invalid, leave GPS fields as NaN (don't update them)
                 except (ValueError, IndexError):
                     pass
             
@@ -416,11 +554,21 @@ class TxtParser(BaseLogParser):
         
         df = pd.DataFrame(messages)
         
+        def _get_valid_gps_value(series):
+            """Get the first valid GPS coordinate from a series."""
+            valid_values = series.dropna()
+            if valid_values.empty:
+                return np.nan
+            
+            # Since validation is now done at message parsing level,
+            # just return the first valid value
+            return valid_values.iloc[0]
+        
         # Group by timestamp and combine data from different message types
         df_combined = df.groupby('timestamp').agg({
-            'gps_lat': 'first',
-            'gps_lon': 'first', 
-            'gps_alt': 'first',
+            'gps_lat': _get_valid_gps_value,
+            'gps_lon': _get_valid_gps_value, 
+            'gps_alt': _get_valid_gps_value,
             'imu_ax': 'first',
             'imu_ay': 'first',
             'imu_az': 'first',
