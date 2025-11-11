@@ -13,5 +13,6 @@ from .tlog_parser import TLogParser
 from .bin_parser import BinParser
 from .rlog_parser import RLogParser
 from .txt_parser import TxtParser
+from .txt_parser_raw import TxtParserRaw
 
-__all__ = ["BaseLogParser", "TLogParser", "BinParser", "RLogParser", "TxtParser"]
+__all__ = ["BaseLogParser", "TLogParser", "BinParser", "RLogParser", "TxtParser", "TxtParserRaw"]
