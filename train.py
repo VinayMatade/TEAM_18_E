@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 # -------------------------
 # CONFIGURATION
 # -------------------------
-CSV_FOLDER = "files/cleaned/"
+CSV_FOLDER = "files/cleaned/train/"
 NOISE_BANK_PATH = "noise_bank.npy"
 
 EPOCHS = 50
