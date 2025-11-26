@@ -20,7 +20,6 @@ REQUIRED_COLS = ['GPS_Lat', 'GPS_Lng', 'IMU_AccX', 'IMU_AccY', 'IMU_AccZ', 'IMU_
 =======
 CSV_FOLDER = "/content/TEAM_18_E/clean/train"
 NOISE_BANK_PATH = "/content/TEAM_18_E/noise_bank.npy"
->>>>>>> 883e65386948d70dc94e869f68d091bb5a255918
 
 EPOCHS = 50
 BATCH_SIZE = 256  # Reduced for stability
