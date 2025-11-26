@@ -13,8 +13,8 @@ import joblib
 # -------------------------
 # CONFIGURATION
 # -------------------------
-CSV_FOLDER = "/content/fast_data/"       # adjust if needed
-NOISE_BANK_PATH = "/content/noise_bank.npy"
+CSV_FOLDER = "/content/TEAM_18_E/files/cleaned/train"       # adjust if needed
+NOISE_BANK_PATH = "/content/TEAM_18_E/noise_bank.npy"
 REQUIRED_COLS = ['GPS_Lat', 'GPS_Lng',
                  'IMU_AccX', 'IMU_AccY', 'IMU_AccZ',
                  'IMU_GyrX', 'IMU_GyrY', 'IMU_GyrZ']
@@ -163,31 +163,80 @@ class HybridNoiseDataset(Dataset):
 # MODEL (TCN)
 # -------------------------
 class Chomp1d(nn.Module):
-    def __init__(self, chomp_size):
+    """Remove the extra padding on the right side produced by Conv1d with 'padding'."""
+    def __init__(self, chomp_size: int):
         super().__init__()
-        self.chomp_size = chomp_size
-    def forward(self, x):
+        self.chomp_size = int(chomp_size)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.chomp_size == 0:
+            return x
         return x[:, :, :-self.chomp_size].contiguous()
 
+
 class TemporalBlock(nn.Module):
-    def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout=0.2):
+    """
+    Standard TCN temporal block (no weight-norm). Uses two Conv1d layers with
+    ReLU + Dropout, a residual connection, and a Chomp to remove causal padding.
+    """
+
+    def __init__(self,
+                 n_inputs: int,
+                 n_outputs: int,
+                 kernel_size: int,
+                 stride: int,
+                 dilation: int,
+                 padding: int,
+                 dropout: float = 0.2):
         super().__init__()
-        from torch.nn.utils.parametrizations import weight_norm
-        self.conv1 = weight_norm(nn.Conv1d(n_inputs, n_outputs, kernel_size,
-                                           stride=stride, padding=padding, dilation=dilation))
+
+        # conv layers with padding chosen so that length_out = length_in + padding*2 - ...
+        # We'll remove the right-side padding using Chomp1d(padding)
+        self.conv1 = nn.Conv1d(n_inputs, n_outputs, kernel_size,
+                               stride=stride, padding=padding, dilation=dilation)
+        self.chomp1 = Chomp1d(padding)
         self.relu1 = nn.ReLU()
         self.dropout1 = nn.Dropout(dropout)
-        self.conv2 = weight_norm(nn.Conv1d(n_outputs, n_outputs, kernel_size,
-                                           stride=stride, padding=padding, dilation=dilation))
+
+        self.conv2 = nn.Conv1d(n_outputs, n_outputs, kernel_size,
+                               stride=stride, padding=padding, dilation=dilation)
+        self.chomp2 = Chomp1d(padding)
         self.relu2 = nn.ReLU()
         self.dropout2 = nn.Dropout(dropout)
-        self.net = nn.Sequential(self.conv1, self.relu1, self.dropout1, self.conv2, self.relu2, self.dropout2)
+
+        # Sequential block for the two convs
+        self.net = nn.Sequential(
+            self.conv1, self.chomp1, self.relu1, self.dropout1,
+            self.conv2, self.chomp2, self.relu2, self.dropout2
+        )
+
+        # 1x1 downsample if channels differ
         self.downsample = nn.Conv1d(n_inputs, n_outputs, 1) if n_inputs != n_outputs else None
         self.relu = nn.ReLU()
 
-    def forward(self, x):
-        out = self.net(x)
+        self._init_weights()
+
+    def _init_weights(self):
+        # Small gaussian init is common in TCN implementations
+        nn.init.normal_(self.conv1.weight, 0.0, 0.01)
+        nn.init.normal_(self.conv2.weight, 0.0, 0.01)
+        if self.conv1.bias is not None:
+            nn.init.zeros_(self.conv1.bias)
+        if self.conv2.bias is not None:
+            nn.init.zeros_(self.conv2.bias)
+        if self.downsample is not None:
+            nn.init.normal_(self.downsample.weight, 0.0, 0.01)
+            if self.downsample.bias is not None:
+                nn.init.zeros_(self.downsample.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: (batch, channels_in, seq_len)
+        returns: (batch, channels_out, seq_len)
+        """
+        out = self.net(x)                          # Conv path -> (B, C_out, seq_len)
         res = x if self.downsample is None else self.downsample(x)
+        # After chomp, out and res should have identical time dimension
         return self.relu(out + res)
 
 class TCN(nn.Module):
