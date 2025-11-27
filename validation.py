@@ -49,95 +49,7 @@ REQUIRED_COLS = ['GPS_Lat', 'GPS_Lng', 'IMU_AccX','IMU_AccY','IMU_AccZ','IMU_Gyr
 # ------------------------------------------------------
 # 1. ROBUST SCALER LOADER
 # ------------------------------------------------------
-def load_scalers_safe(path, train_files=None, required_cols=REQUIRED_COLS, seq_len=SEQ_LEN):
-    """
-    Robust scaler loader that handles multiple formats and can recompute if needed.
-    """
-    # Try joblib first (normal case)
-    if os.path.exists(path):
-        try:
-            obj = joblib.load(path)
-            # Accept either direct dict {'imu':..., 'target':...} or a single scaler
-            if isinstance(obj, dict) and 'imu' in obj and 'target' in obj:
-                print(f"✅ Loaded scalers via joblib from {path}")
-                return obj
-            else:
-                print(f"⚠️ joblib.load returned {type(obj)}, attempting to interpret...")
-                # If it's a single scaler object, wrap
-                if hasattr(obj, 'transform') and hasattr(obj, 'mean_'):
-                    print("Single scaler object detected — using as 'imu' scaler; 'target' will be computed from CSVs.")
-                    return {'imu': obj, 'target': None}
-        except Exception as e:
-            print(f"⚠️ joblib.load failed: {e!r}")
-        
-        # Try pickle
-        try:
-            with open(path, 'rb') as f:
-                obj = pickle.load(f)
-            if isinstance(obj, dict) and 'imu' in obj and 'target' in obj:
-                print(f"✅ Loaded scalers via pickle from {path}")
-                return obj
-            else:
-                print(f"⚠️ pickle.load returned {type(obj)}; interpreting fallback...")
-                if hasattr(obj, 'transform') and hasattr(obj, 'mean_'):
-                    return {'imu': obj, 'target': None}
-        except Exception as e:
-            print(f"⚠️ pickle.load failed: {e!r}")
-        
-        # Try numpy (sometimes people save arrays)
-        try:
-            arr = np.load(path, allow_pickle=True)
-            print("np.load succeeded; inspecting content...")
-            if isinstance(arr, np.ndarray) and arr.dtype == object:
-                arr0 = arr.item() if arr.size == 1 else arr
-                if isinstance(arr0, dict) and 'imu' in arr0 and 'target' in arr0:
-                    print(f"✅ Loaded scalers via numpy from {path}")
-                    return arr0
-        except Exception as e:
-            print(f"⚠️ np.load failed: {e!r}")
-    
-    # Last resort: recompute scalers from training files (slow but reliable)
-    print("⚠️ Could not load scalers file. Attempting to compute scalers from provided train_files (this may take a while).")
-    if not train_files:
-        raise RuntimeError(f"Scalers missing or unreadable at {path} and no train_files provided to recompute them.")
-    
-    # Gather arrays to fit scalers
-    imu_data = []
-    rel_samples = []
-    for f in train_files:
-        try:
-            df = pd.read_csv(f)
-            if not all(c in df.columns for c in required_cols):
-                continue
-            arr = df[required_cols].values.astype(np.float32)
-            arr = arr[~np.isnan(arr).any(axis=1)]
-            if len(arr) <= seq_len:
-                continue
-            imu_data.append(arr[:, 2:8])
-            
-            # Sample a few windows for target scaler
-            indices = np.random.randint(0, len(arr)-seq_len, min(50, max(1, len(arr)-seq_len)))
-            for i in indices:
-                w = arr[i:i+seq_len, 0:2].copy()
-                slat, slon = w[0,0], w[0,1]
-                mlat = 110649.0
-                mlon = 111132.0 * np.cos(np.radians(slat))
-                w[:,0] = (w[:,0]-slat)*mlat
-                w[:,1] = (w[:,1]-slon)*mlon
-                rel_samples.append(w)
-        except Exception as e:
-            print(f"⚠️ Warning: failed to read {f}: {e}")
-    
-    if not imu_data or not rel_samples:
-        raise RuntimeError("Unable to recompute scalers: no valid data found in train_files.")
-    
-    imu_all = np.vstack(imu_data)
-    imu_scaler = StandardScaler().fit(imu_all)
-    target_all = np.vstack(rel_samples)
-    target_scaler = StandardScaler().fit(target_all)
-    
-    print("✅ Recomputed scalers from CSVs. Consider saving them to disk for faster future runs.")
-    return {'imu': imu_scaler, 'target': target_scaler}
+# Removed load_scalers_safe function - no longer needed since train.py saves all 4 scalers
 
 # ------------------------------------------------------
 # 2. Receptive Field Calculator
@@ -271,16 +183,21 @@ def compute_saliency(model, x_tensor, out_index=0):
     plt.title(f"Saliency Map for Output {out_index}")
     plt.xlabel("Time Step")
     plt.ylabel("Feature")
-    plt.yticks(range(8), ['GPS_Lat', 'GPS_Lon', 'AccX', 'AccY', 'AccZ', 'GyrX', 'GyrY', 'GyrZ'])
+    # 10 features: gps_norm(2) + delta_norm(2) + norm_imu(6)
+    plt.yticks(range(10), ['GPS_Lat', 'GPS_Lon', 'Δ_Lat', 'Δ_Lon', 'AccX', 'AccY', 'AccZ', 'GyrX', 'GyrY', 'GyrZ'])
     plt.savefig(os.path.join(OUTPUT_DIR, f"saliency_out{out_index}.png"))
     plt.close()
 
     return grad
 
-def saliency_by_modality(model, x_tensor, gps_idx=[0,1], imu_idx=list(range(2,8)), out_index=0):
+def saliency_by_modality(model, x_tensor, gps_idx=[0,1,2,3], imu_idx=list(range(4,10)), out_index=0):
     """
     Ablation saliency: compare GPS vs IMU importance
     Returns total gradient magnitude for each modality
+    
+    Feature indices (10 total):
+    - GPS: [0,1] = gps_norm, [2,3] = delta_norm
+    - IMU: [4,5,6,7,8,9] = norm_imu (AccX, AccY, AccZ, GyrX, GyrY, GyrZ)
     """
     x = x_tensor.clone().detach().requires_grad_(True)
     pred = model(x)
@@ -302,7 +219,7 @@ def analyze_modality_importance(model, val_ds, n_samples=100):
     imu_grads = []
     
     for i in range(min(n_samples, len(val_ds))):
-        x, y = val_ds[i]
+        x, y, raw_acc = val_ds[i]  # Updated to match HybridNoiseDataset output
         x_tensor = x.unsqueeze(0).to(DEVICE)
         
         gps_g, imu_g = saliency_by_modality(model, x_tensor, out_index=0)
@@ -356,7 +273,8 @@ def activation_pca(model, dataset, block_idx=1, n_samples=2000):
     loader = DataLoader(dataset, batch_size=64, shuffle=True, num_workers=2)
     count = 0
 
-    for x, y in loader:
+    for batch in loader:
+        x, y, raw_acc = batch  # Updated to match HybridNoiseDataset output
         with torch.no_grad():
             _ = model(x.to(DEVICE))
         count += x.size(0)
@@ -390,16 +308,15 @@ def main():
         print(f"⚠️ No CSV files found in {CSV_FOLDER}")
         return
     
-    # Load scalers with robust fallback
-    scalers = load_scalers_safe(SCALER_PATH, train_files=files)
+    # Load scalers (matching train.py: imu, gps_point, target, delta)
+    scalers = joblib.load(SCALER_PATH)
     
-    # If target scaler is still None, recompute
-    if scalers.get('target', None) is None:
-        print("⚠️ Target scaler missing from file; recomputing from validation files...")
-        scalers = load_scalers_safe(SCALER_PATH, train_files=files)
+    if not all(k in scalers for k in ['imu', 'gps_point', 'target', 'delta']):
+        print("❌ Missing required scalers! Expected: imu, gps_point, target, delta")
+        print(f"   Found: {list(scalers.keys())}")
+        return
     
-    imu_scaler = scalers['imu']
-    target_scaler = scalers['target']
+    print(f"✅ Loaded scalers: {list(scalers.keys())}")
     
     # Load validation data
     val_arrs = []
@@ -452,8 +369,15 @@ def main():
     val_ds = torch.utils.data.ConcatDataset(val_ds_list)
     print(f"✅ Created validation dataset with {len(val_ds)} windows")
 
-    # Load model
-    model = TCN(input_size=8, output_size=2, num_channels=[64,128,64]).to(DEVICE)
+    # Load model (matching train.py parameters)
+    model = TCN(
+        input_size=10,  # gps_norm(2) + delta_norm(2) + norm_imu(6) = 10
+        output_size=2, 
+        num_channels=[128, 128, 128, 128, 128, 128], 
+        kernel_size=7, 
+        dropout=0.3,
+        dilations=[1, 2, 4, 8, 16, 32]
+    ).to(DEVICE)
     model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
     model.eval()
 
@@ -466,8 +390,11 @@ def main():
     plot_conv_kernels(first_conv, OUTPUT_DIR)
     plot_kernel_freq(first_conv, OUTPUT_DIR)
 
-    # 3. Single sample for activation & saliency
-    x_sample, y_sample = val_ds[0]
+    # 3. Receptive Field Analysis
+    analyze_receptive_field(model, SEQ_LEN)
+
+    # 4. Single sample for activation & saliency
+    x_sample, y_sample, raw_acc_sample = val_ds[0]
     x_tensor = x_sample.unsqueeze(0).to(DEVICE)
 
     extract_activations(model, x_tensor, block_idx=0)
@@ -476,7 +403,10 @@ def main():
     compute_saliency(model, x_tensor, out_index=0)
     compute_saliency(model, x_tensor, out_index=1)
 
-    # 4. PCA
+    # 5. Modality Importance Analysis
+    analyze_modality_importance(model, val_ds, n_samples=100)
+
+    # 6. PCA
     activation_pca(model, val_ds, block_idx=1, n_samples=2000)
 
     print("Validation analysis complete. Files saved to:", OUTPUT_DIR)
