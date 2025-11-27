@@ -14,18 +14,18 @@ import joblib
 # -------------------------
 # CONFIGURATION
 # -------------------------
-CSV_FOLDER = "/content/TEAM_18_E/files/cleaned/train/"
-NOISE_BANK_PATH = "/content/TEAM_18_E/noise_bank.npy"
-REQUIRED_COLS = ['GPS_Lat', 'GPS_Lng', 'IMU_AccX', 'IMU_AccY', 'IMU_AccZ', 'IMU_GyrX', 'IMU_GyrY', 'IMU_GyrZ']
+CSV_FOLDER = "/content/fast_data/"
+NOISE_BANK_PATH = "/content/noise_bank.npy"
+REQUIRED_COLS = ['GPS_Lat', 'GPS_Lng', 'IMU_AccX', 'IMU_AccY', 'IMU_AccZ', 
+                 'IMU_GyrX', 'IMU_GyrY', 'IMU_GyrZ']
 
 EPOCHS = 60
 BATCH_SIZE = 128        
-SEQ_LEN = 125           # 2.5 seconds
+SEQ_LEN = 125           
 LR = 0.0005
 PATIENCE = 15
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Reproducibility
 SEED = 42
 np.random.seed(SEED)
 torch.manual_seed(SEED)
@@ -70,32 +70,36 @@ class HybridNoiseDataset(Dataset):
         self.gps_scaler = scalers['gps_point']
         self.target_scaler = scalers['target']
         self.delta_scaler = scalers['delta']
+        
         self.drift_lat = shared['drift_lat']
         self.drift_lon = shared['drift_lon']
         self.real_noise = shared.get('real_noise', None)
         self.drift_len = len(self.drift_lat)
         self.noise_len = len(self.real_noise) if (self.real_noise is not None) else 0
-        self.logged_once = False
 
         data_list = []
-        for f in file_list:
+        for item in file_list:
             try:
-                if isinstance(f, str):
-                    df = pd.read_csv(f)
+                if isinstance(item, str):
+                    df = pd.read_csv(item)
                     if not all(c in df.columns for c in REQUIRED_COLS): continue
                     arr = df[REQUIRED_COLS].values.astype(np.float32)
                 else:
-                    arr = f
-                
+                    arr = item # numpy array
+
+                # Filtering repeated here for safety, but main() does it too now
                 arr = arr[~np.isnan(arr).any(axis=1)]
                 valid = (arr[:, 0] != 0) & (arr[:, 1] != 0)
                 arr = arr[valid]
                 
-                if len(arr) > seq_len:
+                if len(arr) > self.seq_len:
                     data_list.append(arr)
-            except: pass
+            except Exception: pass
 
-        if not data_list: raise ValueError("No data loaded!")
+        if not data_list: 
+            # Fail gracefully? No, explicit error helps debug bad splits
+            raise ValueError(f"No valid data loaded in Dataset! Input list len: {len(file_list)}")
+            
         self.raw_data = np.vstack(data_list)
         self.n_samples = len(self.raw_data) - self.seq_len
 
@@ -112,39 +116,23 @@ class HybridNoiseDataset(Dataset):
         raw_gyr = self.raw_imu_gyr[idx: idx + self.seq_len]
         gps_window = self.raw_gps[idx: idx + self.seq_len].copy()
 
-        # --- SAFER ROTATION BLOCK ---
         dt = 0.02
         gyr = raw_gyr.copy()
-        
-        # Auto-detect Degrees vs Radians (Fix #18)
-        if np.abs(gyr).max() > 50: 
-            gyr = np.deg2rad(gyr)
-            
-        # Remove bias before integration (Fix #8)
+        if np.abs(gyr).max() > 50: gyr = np.deg2rad(gyr)
         gyr = gyr - np.mean(gyr, axis=0, keepdims=True)
         
         attitude = np.cumsum(gyr * dt, axis=0)
-        roll = attitude[:, 0]
-        pitch = attitude[:, 1]
+        roll, pitch = attitude[:, 0], attitude[:, 1]
         
         c_r, s_r = np.cos(roll), np.sin(roll)
         c_p, s_p = np.cos(pitch), np.sin(pitch)
         
         ay_prime = raw_acc[:, 1] * c_r - raw_acc[:, 2] * s_r
         az_prime = raw_acc[:, 1] * s_r + raw_acc[:, 2] * c_r
-        
         ax_level = raw_acc[:, 0] * c_p + az_prime * s_p
         ay_level = ay_prime
         
         raw_accel_xy = np.stack([ax_level, ay_level], axis=1).astype(np.float32)
-        
-        # Diagnostic Logging (Once per run, not per epoch)
-        if not self.logged_once and idx == 0:
-            # We use a class variable but since Dataset is copied to workers, 
-            # this print only happens in the main process or first worker
-            # print(f"Diagnostic: Rotated Acc Range: {raw_accel_xy.min():.2f} to {raw_accel_xy.max():.2f}")
-            self.logged_once = True
-        # -----------------------------
 
         start_lat, start_lon = gps_window[0, 0], gps_window[0, 1]
         mlat = 110649.0
@@ -154,16 +142,11 @@ class HybridNoiseDataset(Dataset):
         gps_window[:, 1] = (gps_window[:, 1] - start_lon) * mlon
         clean_gps_m = gps_window
 
-        # Safe Drift Indexing (Fix #9)
         max_dstart = max(0, self.drift_len - self.seq_len)
-        if max_dstart > 0:
-            d_start = np.random.randint(0, max_dstart + 1)
-        else:
-            d_start = 0
+        d_start = np.random.randint(0, max_dstart + 1) if max_dstart > 0 else 0
         drift = np.stack([self.drift_lat[d_start : d_start + self.seq_len],
                           self.drift_lon[d_start : d_start + self.seq_len]], axis=1)
 
-        # Safe Noise Indexing
         if self.noise_len >= self.seq_len:
             max_r = self.noise_len - self.seq_len
             r = np.random.randint(0, max_r + 1) if max_r > 0 else 0
@@ -187,17 +170,29 @@ class HybridNoiseDataset(Dataset):
 # -------------------------
 # MODEL
 # -------------------------
+class Chomp1d(nn.Module):
+    """Remove extra padding from causal convolution"""
+    def __init__(self, chomp_size):
+        super().__init__()
+        self.chomp_size = chomp_size
+    
+    def forward(self, x):
+        return x[:, :, :-self.chomp_size].contiguous() if self.chomp_size > 0 else x
+
 class TemporalBlock(nn.Module):
     def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout=0.2):
         super().__init__()
         from torch.nn.utils.parametrizations import weight_norm
         self.conv1 = weight_norm(nn.Conv1d(n_inputs, n_outputs, kernel_size, stride=stride, padding=padding, dilation=dilation))
+        self.chomp1 = Chomp1d(padding)
         self.relu1 = nn.ReLU()
         self.dropout1 = nn.Dropout(dropout)
         self.conv2 = weight_norm(nn.Conv1d(n_outputs, n_outputs, kernel_size, stride=stride, padding=padding, dilation=dilation))
+        self.chomp2 = Chomp1d(padding)
         self.relu2 = nn.ReLU()
         self.dropout2 = nn.Dropout(dropout)
-        self.net = nn.Sequential(self.conv1, self.relu1, self.dropout1, self.conv2, self.relu2, self.dropout2)
+        self.net = nn.Sequential(self.conv1, self.chomp1, self.relu1, self.dropout1, 
+                                 self.conv2, self.chomp2, self.relu2, self.dropout2)
         self.downsample = nn.Conv1d(n_inputs, n_outputs, 1) if n_inputs != n_outputs else None
         self.relu = nn.ReLU()
 
@@ -243,10 +238,19 @@ def main():
             if all(c in df.columns for c in REQUIRED_COLS):
                 arr = df[REQUIRED_COLS].values.astype(np.float32)
                 arr = arr[~np.isnan(arr).any(axis=1)]
-                if len(arr) > SEQ_LEN: temp_arrs.append(arr)
-        except: pass
+                
+                # --- FIX: APPLY NULL ISLAND FILTER HERE TOO ---
+                valid = (arr[:, 0] != 0) & (arr[:, 1] != 0)
+                arr = arr[valid]
+                
+                if len(arr) > SEQ_LEN: 
+                    temp_arrs.append(arr)
+        except Exception as e:
+            print(f"Failed {f}: {e}")
     
-    if not temp_arrs: return
+    if not temp_arrs: 
+        print("❌ No valid training data found!")
+        return
     
     all_train = np.vstack(temp_arrs)
     imu_scaler = StandardScaler().fit(all_train[:, 2:8])
@@ -257,6 +261,7 @@ def main():
     
     print("Computing stats for scalers...")
     for arr in temp_arrs:
+        # No need to filter again, temp_arrs are already clean
         max_idx = len(arr) - SEQ_LEN
         if max_idx <= 0: continue
         indices = np.random.randint(0, max_idx, min(50, max_idx))
@@ -279,7 +284,6 @@ def main():
     scalers = {'imu': imu_scaler, 'gps_point': gps_point_scaler, 'target': target_scaler, 'delta': delta_scaler}
     joblib.dump(scalers, "scalers.save")
     
-    # Shared
     shared = {
         'drift_lat': make_drift_buffer(200_000),
         'drift_lon': make_drift_buffer(200_000),
@@ -297,10 +301,16 @@ def main():
             df = pd.read_csv(f)
             arr = df[REQUIRED_COLS].values.astype(np.float32)
             arr = arr[~np.isnan(arr).any(axis=1)]
+            
+            # --- FIX: APPLY NULL ISLAND FILTER TO VAL TOO ---
+            valid = (arr[:, 0] != 0) & (arr[:, 1] != 0)
+            arr = arr[valid]
+            
             if len(arr) > SEQ_LEN: val_arrs.append(arr)
         except: pass
         
     if not val_arrs:
+        print("⚠️ No validation data found! Splitting train data...")
         val_len = int(len(temp_arrs) * 0.1)
         val_arrs = temp_arrs[-val_len:]
         
@@ -329,7 +339,6 @@ def main():
     print(f"Training {len(train_ds)} samples. Physics Enabled.")
     best_mae = float('inf')
     history = {'val_mae': []}
-    
     lambda_phy = 0.01
     
     for epoch in range(EPOCHS):
