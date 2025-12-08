@@ -8,6 +8,7 @@ Provides commands for cleaning logs, building noise banks, training models, and 
 import argparse
 import sys
 import os
+import glob
 import subprocess
 from pathlib import Path
 

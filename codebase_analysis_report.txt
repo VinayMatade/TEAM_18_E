@@ -1,0 +1,122 @@
+================================================================================
+CODEBASE ANALYSIS REPORT (Enhanced)
+================================================================================
+
+ENTRY POINTS:
+  - uav_log_processor/cli.py
+  - train.py
+  - run.py
+  - validation.py
+  - clean_and_convert_logs.py
+  - build_noise_bank.py
+
+STATISTICS:
+  Total Python files: 56
+  Used files: 6
+  Unused files: 50
+
+================================================================================
+SAFE TO REMOVE (Example/Diagnostic Scripts)
+================================================================================
+
+  ✓ analyze_codebase.py
+      → Analysis script (can be removed after use)
+  ✓ analyze_codebase_v2.py
+      → Analysis script (can be removed after use)
+
+================================================================================
+TEST FILES (Currently Unused)
+================================================================================
+
+Note: These are test files. They may be useful for future development
+but are not currently imported by the main workflows.
+
+  - tests/__init__.py
+  - tests/integration/__init__.py
+  - tests/integration/test_integration.py
+  - tests/unit/__init__.py
+  - tests/unit/parsers/__init__.py
+  - tests/unit/parsers/test_parsers.py
+  - tests/unit/processors/__init__.py
+  - tests/unit/processors/test_dataset_formatter.py
+  - tests/unit/processors/test_error_calculator.py
+  - tests/unit/processors/test_ground_truth_generator.py
+  - tests/unit/processors/test_metadata_generator.py
+  - tests/unit/processors/test_motion_classifier.py
+  - tests/unit/processors/test_reproducibility_manager.py
+  - tests/unit/processors/test_synchronizer.py
+  - tests/unit/utils/__init__.py
+  - tests/unit/utils/test_data_quality.py
+  - tests/unit/utils/test_error_handling.py
+  - tests/unit/utils/test_gps_filter.py
+  - tests/unit/utils/test_visualization.py
+
+================================================================================
+PACKAGE FILES (Currently Unused)
+================================================================================
+
+Note: These are part of the uav_log_processor package but not currently
+imported by the CLI or main scripts. They may be part of an alternative
+workflow or future features.
+
+  - uav_log_processor/__init__.py
+  - uav_log_processor/__main__.py
+  - uav_log_processor/config.py
+  - uav_log_processor/parsers/__init__.py
+  - uav_log_processor/parsers/base.py
+  - uav_log_processor/parsers/bin_parser.py
+  - uav_log_processor/parsers/rlog_parser.py
+  - uav_log_processor/parsers/tlog_parser.py
+  - uav_log_processor/parsers/txt_parser.py
+  - uav_log_processor/parsers/txt_parser_raw.py
+  - uav_log_processor/pipeline.py
+  - uav_log_processor/processors/__init__.py
+  - uav_log_processor/processors/base.py
+  - uav_log_processor/processors/dataset_formatter.py
+  - uav_log_processor/processors/error_calculator.py
+  - uav_log_processor/processors/ground_truth_generator.py
+  - uav_log_processor/processors/metadata_generator.py
+  - uav_log_processor/processors/motion_classifier.py
+  - uav_log_processor/processors/reproducibility_manager.py
+  - uav_log_processor/processors/synchronizer.py
+  - uav_log_processor/utils/__init__.py
+  - uav_log_processor/utils/coordinates.py
+  - uav_log_processor/utils/data_quality.py
+  - uav_log_processor/utils/error_handling.py
+  - uav_log_processor/utils/gps_filter.py
+  - uav_log_processor/utils/io_utils.py
+  - uav_log_processor/utils/validation.py
+  - uav_log_processor/utils/visualization.py
+
+================================================================================
+OTHER UNUSED FILES
+================================================================================
+
+  - setup.py
+
+================================================================================
+RECOMMENDATIONS
+================================================================================
+
+IMMEDIATE ACTIONS (Safe to remove):
+  1. example_raw_usage.py - Example/documentation file
+  2. compare_parsers.py - Example/documentation file
+  3. check_scalers.py - One-time diagnostic script
+
+CONSIDER REMOVING:
+  - pipeline_with_raw_parser.py (if it's an old implementation)
+  - setup.py (if not needed for package installation)
+
+KEEP FOR NOW:
+  - All test files (may be useful for future development)
+  - uav_log_processor package files (may be used by alternative workflows)
+
+CORE FILES (DO NOT REMOVE):
+  - uav_log_processor/cli.py
+  - train.py
+  - run.py
+  - validation.py
+  - clean_and_convert_logs.py
+  - build_noise_bank.py
+
+================================================================================

@@ -5,8 +5,8 @@ import pandas as pd
 import numpy as np
 
 # --- CONFIGURATION ---
-INPUT_FOLDER = "files/logs/"      # Folder with your raw .log files
-OUTPUT_FOLDER = "files/cleaned/"  # Folder to save the CSVs
+INPUT_FOLDER = os.getenv("INPUT_FOLDER", "files/logs/")      # Folder with your raw .log files
+OUTPUT_FOLDER = os.getenv("OUTPUT_FOLDER", "files/cleaned/")  # Folder to save the CSVs
 
 # --- PARAMETER MAPPING ---
 # NOTE: All scaling (like Lat/Lng * 1e-7 or HDop * 0.01) is REMOVED

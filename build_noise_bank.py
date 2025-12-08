@@ -6,8 +6,8 @@ from scipy.ndimage import gaussian_filter1d
 
 # --- CONFIG ---
 # CRITICAL: Point this to your CLEANED folder, not the raw logs
-INPUT_FOLDER = "files/cleaned/"
-OUTPUT_FILE = "noise_bank.npy"
+INPUT_FOLDER = os.getenv("INPUT_FOLDER", "files/cleaned/")
+OUTPUT_FILE = os.getenv("OUTPUT_FILE", "noise_bank.npy")
 METERS_PER_DEG = 111139.0
 
 collected_noise = []

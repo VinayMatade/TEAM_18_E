@@ -4,6 +4,23 @@ Physics-informed TCN model for GPS denoising using IMU data.
 
 ## Quick Start
 
+### Using the CLI (Recommended)
+
+```bash
+# Install the package
+pip install -e .
+
+# Complete workflow
+uav-log-processor clean -i files/logs -o files/cleaned
+uav-log-processor noise-bank -i files/cleaned/train -o noise_bank.npy
+uav-log-processor train -i files/cleaned/train -n noise_bank.npy -e 60
+uav-log-processor run -m best_model.pth -i test_flight.csv -o corrected.csv --plot
+```
+
+See [CLI_USAGE.md](CLI_USAGE.md) for detailed CLI documentation.
+
+### Using Scripts Directly
+
 ```bash
 python train.py
 ```

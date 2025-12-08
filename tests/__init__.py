@@ -1,1 +1,1 @@
-# Tests package
+# Tests for UAV Log Processor
