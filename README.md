@@ -17,7 +17,7 @@ uav-log-processor train -i files/cleaned/train -n noise_bank.npy -e 60
 uav-log-processor run -m best_model.pth -i test_flight.csv -o corrected.csv --plot
 ```
 
-See [CLI_USAGE.md](CLI_USAGE.md) for detailed CLI documentation.
+See [DOCUMENTATION.md](DOCUMENTATION.md) for complete documentation including CLI usage, implementation details, and changelog.
 
 ### Using Scripts Directly
 

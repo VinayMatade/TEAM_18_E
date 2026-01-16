@@ -1,6 +1,0 @@
-Testing CoordinateTransformer...
-Test 1 - Origin: x=0.000000, y=0.000000 (should be ~0)
-Test 2 - Round trip: input=(40.1, -104.9), output=(40.100000, -104.900000)
-Test 3 - Arrays: input shape=(3,), output shape=(3,)
-
-All basic tests passed!
